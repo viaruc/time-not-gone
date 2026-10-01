@@ -39,7 +39,7 @@ session with no Space goes under the first folder you shared with it.
 
 Time is estimated from the timestamps of your prompts and Claude's replies:
 
-- **Continuous work:** two messages in the same workspace less than 15 minutes apart
+- **Continuous work:** two messages in the same workspace less than 30 minutes apart
   count as continuous time. Change the cutoff with `--idle <minutes>`.
 - **Tail credit:** each burst of activity gets one extra minute at the end, for reading
   the last reply.
@@ -104,7 +104,7 @@ tng day yesterday    # a given day: yesterday, 2026-09-30, or -3 (three days ago
 tng week             # last 7 days, plus a per-day strip
 tng month            # last 30 days
 tng --json week      # machine-readable output
-tng --idle 30 week   # count gaps up to 30 min as active
+tng --idle 15 week   # stricter: gaps over 15 min count as idle
 tng scan             # index new activity and exit
 tng watch            # keep indexing in the foreground
 ```

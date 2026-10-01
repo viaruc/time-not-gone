@@ -15,7 +15,7 @@ from pathlib import Path
 
 from . import store
 
-IDLE_GAP = 15 * 60
+IDLE_GAP = 30 * 60
 TAIL = 60
 
 
@@ -127,8 +127,10 @@ def day_report(conn: sqlite3.Connection, day: date, idle_gap: int = IDLE_GAP) ->
     return DayReport(day, merged_length(all_segments), results)
 
 
-def range_reports(conn: sqlite3.Connection, last_day: date, days: int) -> list[DayReport]:
-    return [day_report(conn, last_day - timedelta(days=i)) for i in range(days - 1, -1, -1)]
+def range_reports(
+    conn: sqlite3.Connection, last_day: date, days: int, idle_gap: int = IDLE_GAP
+) -> list[DayReport]:
+    return [day_report(conn, last_day - timedelta(days=i), idle_gap) for i in range(days - 1, -1, -1)]
 
 
 def combine(reports: list[DayReport]) -> list[WorkspaceTime]:

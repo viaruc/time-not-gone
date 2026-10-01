@@ -67,7 +67,7 @@ def cmd_day(conn, args) -> None:
 
 
 def cmd_range(conn, args, days: int) -> None:
-    reps = report.range_reports(conn, parse_day(args.day), days)
+    reps = report.range_reports(conn, parse_day(args.day), days, args.idle * 60)
     combined = report.combine(reps)
     total = sum(r.total for r in reps)
     if args.json:
@@ -85,7 +85,7 @@ def cmd_range(conn, args, days: int) -> None:
 def cmd_menubar(conn, args) -> None:
     """Everything the menubar app needs, in one call."""
     day = parse_day(args.day)
-    reps = report.range_reports(conn, day, 7)
+    reps = report.range_reports(conn, day, 7, args.idle * 60)
     print(json.dumps({
         "generated_at": int(systime.time()),
         "today": reps[-1].to_dict(),
@@ -113,7 +113,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(prog="tng", description=__doc__)
     parser.add_argument("--json", action="store_true", help="machine-readable output")
     parser.add_argument("--idle", type=int, default=report.IDLE_GAP // 60,
-                        help="minutes without activity before a gap counts as idle (default 15)")
+                        help=f"minutes without activity before a gap counts as idle (default {report.IDLE_GAP // 60})")
     parser.add_argument("--no-scan", action="store_true", help="skip indexing new activity first")
     sub = parser.add_subparsers(dest="cmd")
     for name, help_text in [
