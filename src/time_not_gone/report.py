@@ -1,0 +1,145 @@
+"""Turn raw activity timestamps into "active time" per workspace.
+
+Two consecutive events in the same workspace less than IDLE_GAP apart count as
+continuous work. Every burst of activity also gets a small TAIL credit after
+its last event (reading the answer, thinking). Parallel sessions in one
+workspace are merged, so they are never double counted; the overall total is
+the union across all workspaces.
+"""
+
+import sqlite3
+from collections import defaultdict
+from dataclasses import dataclass, field
+from datetime import date, datetime, time, timedelta
+from pathlib import Path
+
+from . import store
+
+IDLE_GAP = 15 * 60
+TAIL = 60
+
+
+@dataclass
+class WorkspaceTime:
+    key: str
+    seconds: int = 0
+    sources: dict[str, int] = field(default_factory=lambda: defaultdict(int))
+    sessions: set[str] = field(default_factory=set)
+    first: int | None = None
+    last: int | None = None
+
+    @property
+    def name(self) -> str:
+        if self.key.startswith("cowork:"):
+            return f"Cowork · {self.key.removeprefix('cowork:')}"
+        return Path(self.key).name or self.key
+
+    @property
+    def path(self) -> str:
+        if self.key.startswith("cowork:"):
+            return ""
+        home = str(Path.home())
+        return "~" + self.key[len(home):] if self.key.startswith(home) else self.key
+
+    def source_split(self) -> dict[str, int]:
+        """Per-source seconds scaled so they add up to the (de-duplicated) total."""
+        raw = sum(self.sources.values()) or 1
+        return {
+            src: round(secs * self.seconds / raw)
+            for src, secs in sorted(self.sources.items(), key=lambda kv: -kv[1])
+        }
+
+    def to_dict(self) -> dict:
+        return {
+            "key": self.key,
+            "name": self.name,
+            "path": self.path,
+            "seconds": self.seconds,
+            "sources": self.source_split(),
+            "sessions": len(self.sessions),
+            "first": self.first,
+            "last": self.last,
+        }
+
+
+@dataclass
+class DayReport:
+    day: date
+    total: int
+    workspaces: list[WorkspaceTime]
+
+    def to_dict(self) -> dict:
+        return {
+            "date": self.day.isoformat(),
+            "total_seconds": self.total,
+            "workspaces": [w.to_dict() for w in self.workspaces],
+        }
+
+
+def day_bounds(day: date) -> tuple[int, int]:
+    start = datetime.combine(day, time.min).astimezone()
+    end = datetime.combine(day + timedelta(days=1), time.min).astimezone()
+    return int(start.timestamp()), int(end.timestamp())
+
+
+def merged_length(segments: list[tuple[int, int]]) -> int:
+    total, cur_start, cur_end = 0, None, None
+    for a, b in sorted(segments):
+        if cur_end is None or a > cur_end:
+            if cur_end is not None:
+                total += cur_end - cur_start
+            cur_start, cur_end = a, b
+        else:
+            cur_end = max(cur_end, b)
+    if cur_end is not None:
+        total += cur_end - cur_start
+    return total
+
+
+def day_report(conn: sqlite3.Connection, day: date, idle_gap: int = IDLE_GAP) -> DayReport:
+    start, end = day_bounds(day)
+    by_ws: dict[str, list[tuple[int, str, str]]] = defaultdict(list)
+    for session, ts, workspace, source in store.events_between(conn, start - idle_gap, end + idle_gap):
+        by_ws[workspace].append((ts, source, session))
+
+    all_segments: list[tuple[int, int]] = []
+    results: list[WorkspaceTime] = []
+    for key, events in by_ws.items():
+        wt = WorkspaceTime(key)
+        segments: list[tuple[int, int]] = []
+        for i, (ts, source, session) in enumerate(events):
+            nxt = events[i + 1][0] if i + 1 < len(events) else None
+            seg_end = nxt if nxt is not None and nxt - ts <= idle_gap else ts + TAIL
+            a, b = max(ts, start), min(seg_end, end)
+            if b > a:
+                segments.append((a, b))
+                wt.sources[source] += b - a
+            if start <= ts < end:
+                wt.sessions.add(session)
+                wt.first = ts if wt.first is None else wt.first
+                wt.last = ts
+        wt.seconds = merged_length(segments)
+        if wt.seconds > 0:
+            results.append(wt)
+            all_segments.extend(segments)
+
+    results.sort(key=lambda w: -w.seconds)
+    return DayReport(day, merged_length(all_segments), results)
+
+
+def range_reports(conn: sqlite3.Connection, last_day: date, days: int) -> list[DayReport]:
+    return [day_report(conn, last_day - timedelta(days=i)) for i in range(days - 1, -1, -1)]
+
+
+def combine(reports: list[DayReport]) -> list[WorkspaceTime]:
+    combined: dict[str, WorkspaceTime] = {}
+    for rep in reports:
+        for w in rep.workspaces:
+            agg = combined.setdefault(w.key, WorkspaceTime(w.key))
+            agg.seconds += w.seconds
+            agg.sessions |= w.sessions
+            for src, secs in w.sources.items():
+                agg.sources[src] += secs
+            agg.first = w.first if agg.first is None else min(agg.first, w.first or agg.first)
+            agg.last = w.last if agg.last is None else max(agg.last, w.last or agg.last)
+    return sorted(combined.values(), key=lambda w: -w.seconds)
