@@ -90,6 +90,9 @@ The menu bar shows an hourglass and today's total. Click it to open the popover:
   Desktop, VS Code, CLI or Cowork.
 - **7 days** shows a stacked bar chart of the last week, one colour per workspace. The
   list below it uses the same colours, so it doubles as the legend.
+- **Click a workspace** to list its sessions, with each one's title, start and end time,
+  and time counted. A session's time comes from its own messages, so sessions that ran
+  in parallel can add up to more than the workspace total.
 - **‹ ›** steps back and forward through days.
 
 The app refreshes every minute by running `tng menubar`. It looks for `tng` in
@@ -103,6 +106,7 @@ tng                  # today
 tng day yesterday    # a given day: yesterday, 2026-09-30, or -3 (three days ago)
 tng week             # last 7 days, plus a per-day strip
 tng month            # last 30 days
+tng -s today         # also list each workspace's sessions
 tng --json week      # machine-readable output
 tng --idle 15 week   # stricter: gaps over 15 min count as idle
 tng scan             # index new activity and exit

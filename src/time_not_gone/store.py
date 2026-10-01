@@ -32,12 +32,24 @@ CREATE TABLE IF NOT EXISTS sessions (
 );
 """
 
+# Columns added after the first release, with the statements that backfill them.
+MIGRATIONS = {
+    # titles you set yourself; re-read every log once to pick up old renames
+    ("sessions", "custom_title"): ["ALTER TABLE sessions ADD COLUMN custom_title TEXT", "DELETE FROM files"],
+}
+
 
 def connect(path: Path = DB_PATH) -> sqlite3.Connection:
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path, timeout=30)
     conn.execute("PRAGMA journal_mode=WAL")
     conn.executescript(SCHEMA)
+    for (table, column), statements in MIGRATIONS.items():
+        columns = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+        if column not in columns:
+            for statement in statements:
+                conn.execute(statement)
+            conn.commit()
     return conn
 
 
@@ -69,6 +81,25 @@ def upsert_session(
         "source = excluded.source, title = COALESCE(excluded.title, sessions.title)",
         (session, workspace, source, title),
     )
+
+
+def set_title(conn: sqlite3.Connection, session: str, title: str, custom: bool) -> None:
+    column = "custom_title" if custom else "title"
+    conn.execute(f"UPDATE sessions SET {column} = ? WHERE session = ?", (title, session))
+
+
+def session_titles(conn: sqlite3.Connection, sessions: list[str]) -> dict[str, str]:
+    """Best title per session: your own name for it first, then Claude's."""
+    marks = ",".join("?" * len(sessions))
+    return {
+        row[0]: row[1]
+        for row in conn.execute(
+            f"SELECT session, COALESCE(NULLIF(custom_title, ''), title) FROM sessions "
+            f"WHERE session IN ({marks})",
+            sessions,
+        )
+        if row[1]
+    }
 
 
 def session_info(conn: sqlite3.Connection, session: str) -> tuple[str, str] | None:

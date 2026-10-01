@@ -9,7 +9,7 @@ the union across all workspaces.
 
 import sqlite3
 from collections import defaultdict
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
 
@@ -20,6 +20,32 @@ TAIL = 60
 
 
 @dataclass
+class SessionTime:
+    session: str
+    source: str
+    seconds: int = 0
+    first: int | None = None
+    last: int | None = None
+    title: str | None = None
+
+    def merge(self, other: "SessionTime") -> None:
+        """Add another day of the same session (first/last are always set in reports)."""
+        self.seconds += other.seconds
+        self.first = min(self.first or other.first, other.first or self.first)
+        self.last = max(self.last or other.last, other.last or self.last)
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.session,
+            "title": self.title or "Untitled session",
+            "source": self.source,
+            "seconds": self.seconds,
+            "first": self.first,
+            "last": self.last,
+        }
+
+
+@dataclass
 class WorkspaceTime:
     key: str
     seconds: int = 0
@@ -27,6 +53,12 @@ class WorkspaceTime:
     sessions: set[str] = field(default_factory=set)
     first: int | None = None
     last: int | None = None
+    # time per session, from that session's own messages; overlapping sessions
+    # can add up to more than `seconds`
+    session_times: dict[str, SessionTime] = field(default_factory=dict)
+
+    def session_list(self) -> list[SessionTime]:
+        return sorted(self.session_times.values(), key=lambda s: s.first or 0, reverse=True)
 
     @property
     def name(self) -> str:
@@ -59,6 +91,7 @@ class WorkspaceTime:
             "sessions": len(self.sessions),
             "first": self.first,
             "last": self.last,
+            "session_list": [s.to_dict() for s in self.session_list()],
         }
 
 
@@ -96,6 +129,38 @@ def merged_length(segments: list[tuple[int, int]]) -> int:
     return total
 
 
+def active_segments(
+    times: list[int], start: int, end: int, idle_gap: int
+) -> list[tuple[int, int, int]]:
+    """(from, to, index of the event that opened it) of active time, clipped to [start, end)."""
+    segments = []
+    for i, ts in enumerate(times):
+        nxt = times[i + 1] if i + 1 < len(times) else None
+        seg_end = nxt if nxt is not None and nxt - ts <= idle_gap else ts + TAIL
+        a, b = max(ts, start), min(seg_end, end)
+        if b > a:
+            segments.append((a, b, i))
+    return segments
+
+
+def session_times(
+    events: list[tuple[int, str, str]], start: int, end: int, idle_gap: int
+) -> dict[str, SessionTime]:
+    by_session: dict[str, list[tuple[int, str]]] = defaultdict(list)
+    for ts, source, session in events:
+        by_session[session].append((ts, source))
+    result = {}
+    for session, evs in by_session.items():
+        times = [ts for ts, _ in evs]
+        st = SessionTime(session, evs[-1][1])
+        st.seconds = merged_length([(a, b) for a, b, _ in active_segments(times, start, end, idle_gap)])
+        in_day = [ts for ts in times if start <= ts < end]
+        if st.seconds > 0 and in_day:
+            st.first, st.last = in_day[0], in_day[-1]
+            result[session] = st
+    return result
+
+
 def day_report(conn: sqlite3.Connection, day: date, idle_gap: int = IDLE_GAP) -> DayReport:
     start, end = day_bounds(day)
     by_ws: dict[str, list[tuple[int, str, str]]] = defaultdict(list)
@@ -107,22 +172,24 @@ def day_report(conn: sqlite3.Connection, day: date, idle_gap: int = IDLE_GAP) ->
     for key, events in by_ws.items():
         wt = WorkspaceTime(key)
         segments: list[tuple[int, int]] = []
-        for i, (ts, source, session) in enumerate(events):
-            nxt = events[i + 1][0] if i + 1 < len(events) else None
-            seg_end = nxt if nxt is not None and nxt - ts <= idle_gap else ts + TAIL
-            a, b = max(ts, start), min(seg_end, end)
-            if b > a:
-                segments.append((a, b))
-                wt.sources[source] += b - a
+        for a, b, i in active_segments([ts for ts, _, _ in events], start, end, idle_gap):
+            segments.append((a, b))
+            wt.sources[events[i][1]] += b - a
+        for ts, source, session in events:
             if start <= ts < end:
                 wt.sessions.add(session)
                 wt.first = ts if wt.first is None else wt.first
                 wt.last = ts
         wt.seconds = merged_length(segments)
         if wt.seconds > 0:
+            wt.session_times = session_times(events, start, end, idle_gap)
             results.append(wt)
             all_segments.extend(segments)
 
+    titles = store.session_titles(conn, [s for w in results for s in w.session_times])
+    for w in results:
+        for st in w.session_times.values():
+            st.title = titles.get(st.session)
     results.sort(key=lambda w: -w.seconds)
     return DayReport(day, merged_length(all_segments), results)
 
@@ -144,4 +211,9 @@ def combine(reports: list[DayReport]) -> list[WorkspaceTime]:
                 agg.sources[src] += secs
             agg.first = w.first if agg.first is None else min(agg.first, w.first or agg.first)
             agg.last = w.last if agg.last is None else max(agg.last, w.last or agg.last)
+            for sid, st in w.session_times.items():
+                if sid in agg.session_times:
+                    agg.session_times[sid].merge(st)
+                else:
+                    agg.session_times[sid] = replace(st)
     return sorted(combined.values(), key=lambda w: -w.seconds)

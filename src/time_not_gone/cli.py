@@ -34,13 +34,36 @@ def style(code: str, text: str, color: bool) -> str:
     return f"{code}{text}{RESET}" if color else text
 
 
-def print_table(title: str, total: int, workspaces: list[WorkspaceTime], color: bool) -> None:
+def session_span(first: int, last: int, with_date: bool) -> str:
+    a, b = datetime.fromtimestamp(first), datetime.fromtimestamp(last)
+    start = f"{a:%a %d %H:%M}" if with_date else f"{a:%H:%M}"
+    end = f"{b:%H:%M}" if a.date() == b.date() else f"{b:%a %d %H:%M}"
+    return f"{start}–{end}"
+
+
+def print_sessions(w: WorkspaceTime, name_w: int, color: bool, with_date: bool) -> None:
+    for st in w.session_list():
+        span = session_span(st.first, st.last, with_date)
+        title = (st.title or "Untitled session")[:60]
+        print(style(DIM, f"    {span:<{name_w - 2}}  {fmt_duration(st.seconds):>8}  {title} · {st.source}", color))
+
+
+def print_table(
+    title: str,
+    total: int,
+    workspaces: list[WorkspaceTime],
+    color: bool,
+    sessions: bool = False,
+    multi_day: bool = False,
+) -> None:
     print(style(BOLD, f"{title}  —  {fmt_duration(total)} total", color))
     if not workspaces:
         print(style(DIM, "  no activity", color))
         return
     top = workspaces[0].seconds or 1
     name_w = min(max(len(w.name) for w in workspaces), 32)
+    if sessions:
+        name_w = max(name_w, 26 if multi_day else 14)  # room for the session time span
     for w in workspaces:
         bar = "█" * max(1, round(BAR_WIDTH * w.seconds / top))
         split = ", ".join(f"{src} {fmt_duration(s)}" for src, s in w.source_split().items() if s >= 60)
@@ -48,6 +71,8 @@ def print_table(title: str, total: int, workspaces: list[WorkspaceTime], color: 
             f"  {w.name[:name_w]:<{name_w}}  {fmt_duration(w.seconds):>8}  {bar:<{BAR_WIDTH}}  "
             + style(DIM, f"{len(w.sessions)} sess · {split}", color)
         )
+        if sessions:
+            print_sessions(w, name_w, color, with_date=multi_day)
 
 
 def print_week_strip(reports: list[DayReport], color: bool) -> None:
@@ -63,7 +88,7 @@ def cmd_day(conn, args) -> None:
     if args.json:
         print(json.dumps(rep.to_dict(), indent=2))
         return
-    print_table(f"{rep.day:%A, %d %B %Y}", rep.total, rep.workspaces, args.color)
+    print_table(f"{rep.day:%A, %d %B %Y}", rep.total, rep.workspaces, args.color, args.sessions)
 
 
 def cmd_range(conn, args, days: int) -> None:
@@ -77,7 +102,7 @@ def cmd_range(conn, args, days: int) -> None:
             "workspaces": [w.to_dict() for w in combined],
         }, indent=2))
         return
-    print_table(f"Last {days} days (to {reps[-1].day:%d %b})", total, combined, args.color)
+    print_table(f"Last {days} days (to {reps[-1].day:%d %b})", total, combined, args.color, args.sessions, multi_day=True)
     print()
     print_week_strip(reps, args.color)
 
@@ -114,6 +139,8 @@ def main() -> None:
     parser.add_argument("--json", action="store_true", help="machine-readable output")
     parser.add_argument("--idle", type=int, default=report.IDLE_GAP // 60,
                         help=f"minutes without activity before a gap counts as idle (default {report.IDLE_GAP // 60})")
+    parser.add_argument("-s", "--sessions", action="store_true",
+                        help="list the sessions under each workspace")
     parser.add_argument("--no-scan", action="store_true", help="skip indexing new activity first")
     sub = parser.add_subparsers(dest="cmd")
     for name, help_text in [

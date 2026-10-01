@@ -96,11 +96,13 @@ def scan_claude_code(conn: sqlite3.Connection, worktrees: dict[str, str]) -> int
         if "local-agent-mode-sessions" in path.parts[len(CLAUDE_PROJECTS.parts)]:
             continue  # Cowork transcripts are picked up from audit.jsonl instead
         rows: list[tuple[str, int, str, str]] = []
-        titles: dict[str, str] = {}
+        titles: dict[tuple[str, bool], str] = {}
         for rec in read_new_lines(conn, path):
             session = rec.get("sessionId")
-            if rec.get("type") == "ai-title" and session:
-                titles[session] = rec.get("aiTitle") or rec.get("title") or ""
+            if rec.get("type") == "ai-title" and session and rec.get("aiTitle"):
+                titles[(session, False)] = rec["aiTitle"]
+            if rec.get("type") == "custom-title" and session and rec.get("customTitle"):
+                titles[(session, True)] = rec["customTitle"]
             if rec.get("type") not in ACTIVITY_TYPES or not session or not rec.get("cwd"):
                 continue
             ts = parse_ts(rec.get("timestamp", ""))
@@ -118,11 +120,23 @@ def scan_claude_code(conn: sqlite3.Connection, worktrees: dict[str, str]) -> int
                 source = ENTRYPOINT_SOURCES.get(entry, entry) if entry else "CLI"
                 store.upsert_session(conn, session, workspace, source, None)
             rows.append((session, ts, workspace, source))
-        for session, title in titles.items():
-            conn.execute("UPDATE sessions SET title = ? WHERE session = ?", (title, session))
         store.add_events(conn, rows)
+        for (session, custom), title in titles.items():
+            store.set_title(conn, session, title, custom)
         added += len(rows)
     return added
+
+
+def scan_desktop_titles(conn: sqlite3.Connection) -> None:
+    """The Desktop app keeps the title shown in its sidebar in its own metadata.
+
+    Its "auto" titles are just the start of the first message, so those lose to
+    the transcript's ai-title; anything else (renamed, older sessions) wins.
+    """
+    for meta in DESKTOP_CODE_DIR.glob("*/*/local_*.json"):
+        data = load_json(meta)
+        if data.get("cliSessionId") and data.get("title") and data.get("titleSource") != "auto":
+            store.set_title(conn, data["cliSessionId"], data["title"], custom=True)
 
 
 def cowork_workspace(meta: dict, spaces: dict[str, str]) -> str:
@@ -163,5 +177,6 @@ def scan_cowork(conn: sqlite3.Connection) -> int:
 def scan(conn: sqlite3.Connection) -> int:
     worktrees = worktree_map()
     added = scan_claude_code(conn, worktrees) + scan_cowork(conn)
+    scan_desktop_titles(conn)
     conn.commit()
     return added

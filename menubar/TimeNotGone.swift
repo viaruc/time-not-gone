@@ -7,6 +7,15 @@ import SwiftUI
 
 // MARK: - Payload
 
+struct Session: Decodable, Identifiable {
+    let id: String
+    let title: String
+    let source: String
+    let seconds: Int
+    let first: Int
+    let last: Int
+}
+
 struct Workspace: Decodable, Identifiable {
     let key: String
     let name: String
@@ -15,6 +24,7 @@ struct Workspace: Decodable, Identifiable {
     let sources: [String: Int]
     let sessions: Int
     let last: Int?
+    let session_list: [Session]
     var id: String { key }
 }
 
@@ -166,11 +176,48 @@ struct WorkspaceColors {
 
 enum Range: String, CaseIterable { case day = "Day", week = "7 days" }
 
+/// "21:55–23:02", with the weekday when the list spans several days.
+func sessionSpan(_ s: Session, withDate: Bool) -> String {
+    let first = Date(timeIntervalSince1970: TimeInterval(s.first))
+    let last = Date(timeIntervalSince1970: TimeInterval(s.last))
+    let time = Date.FormatStyle().hour(.twoDigits(amPM: .omitted)).minute()
+    let dated = Date.FormatStyle().weekday(.abbreviated).day().hour(.twoDigits(amPM: .omitted)).minute()
+    let start = first.formatted(withDate ? dated : time)
+    let sameDay = Calendar.current.isDate(first, inSameDayAs: last)
+    return "\(start)–\(last.formatted(sameDay ? time : dated))"
+}
+
+struct SessionRow: View {
+    let session: Session
+    let withDate: Bool
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Circle().fill(color(for: session.source)).frame(width: 6, height: 6)
+                .alignmentGuide(.firstTextBaseline) { $0[.bottom] }
+            VStack(alignment: .leading, spacing: 1) {
+                Text(session.title).font(.callout).lineLimit(1)
+                Text("\(sessionSpan(session, withDate: withDate)) · \(session.source)")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            Spacer()
+            Text(fmt(session.seconds)).font(.callout).monospacedDigit().foregroundStyle(.secondary)
+        }
+        .frame(height: SessionRow.height)
+        .help(session.title)
+    }
+
+    static let height: CGFloat = 32
+}
+
 struct WorkspaceRow: View {
     let ws: Workspace
     let maxSeconds: Int
     /// nil = split the bar by source (day view); otherwise one colour per workspace.
     var workspaceColor: Color? = nil
+    var expanded = false
+    var withDate = false
+    var onToggle: () -> Void = {}
 
     var segments: [(String, Int, Color)] {
         if let workspaceColor { return [(ws.key, ws.seconds, workspaceColor)] }
@@ -184,6 +231,9 @@ struct WorkspaceRow: View {
                     Circle().fill(workspaceColor).frame(width: 8, height: 8)
                 }
                 Text(ws.name).font(.system(.body, weight: .medium)).lineLimit(1)
+                Image(systemName: "chevron.right")
+                    .font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
+                    .rotationEffect(.degrees(expanded ? 90 : 0))
                 Spacer()
                 Text(fmt(ws.seconds)).font(.system(.body, design: .rounded)).monospacedDigit()
             }
@@ -206,10 +256,23 @@ struct WorkspaceRow: View {
                 Text("\(ws.sessions) session\(ws.sessions == 1 ? "" : "s")")
             }
             .font(.caption).foregroundStyle(.secondary)
+            if expanded {
+                VStack(spacing: 2) {
+                    ForEach(ws.session_list) { SessionRow(session: $0, withDate: withDate) }
+                }
+                .padding(.leading, 10)
+                .padding(.top, 4)
+            }
         }
         .padding(.vertical, 4)
-        .help(ws.sources.sorted { $0.value > $1.value }.map { "\($0.key): \(fmt($0.value))" }
-            .joined(separator: "\n"))
+        .contentShape(Rectangle())
+        .onTapGesture { withAnimation(.easeOut(duration: 0.15)) { onToggle() } }
+    }
+
+    static let collapsedHeight: CGFloat = 62
+
+    static func height(_ ws: Workspace, expanded: Bool) -> CGFloat {
+        collapsedHeight + (expanded ? CGFloat(ws.session_list.count) * (SessionRow.height + 2) + 4 : 0)
     }
 }
 
@@ -254,6 +317,7 @@ struct WeekChart: View {
 struct PopoverView: View {
     @ObservedObject var tracker: Tracker
     @State private var range: Range = .day
+    @State private var expanded: Set<String> = []
     @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
 
     var dayTitle: String {
@@ -300,16 +364,22 @@ struct PopoverView: View {
                 } else {
                     ScrollView {
                         VStack(spacing: 6) {
-                            ForEach(list) {
-                                WorkspaceRow(ws: $0, maxSeconds: list[0].seconds,
-                                             workspaceColor: range == .week ? colors.color($0.key) : nil)
+                            ForEach(list) { ws in
+                                WorkspaceRow(ws: ws, maxSeconds: list[0].seconds,
+                                             workspaceColor: range == .week ? colors.color(ws.key) : nil,
+                                             expanded: expanded.contains(ws.key),
+                                             withDate: range == .week) {
+                                    if expanded.remove(ws.key) == nil { expanded.insert(ws.key) }
+                                }
                             }
                         }
                         .padding(.trailing, 8)
                     }
                     // MenuBarExtra windows size to ideal content height, which collapses
                     // a ScrollView; give it an explicit height instead.
-                    .frame(height: min(CGFloat(list.count) * 62, range == .week ? 380 : 520))
+                    .frame(height: min(
+                        list.reduce(0) { $0 + WorkspaceRow.height($1, expanded: expanded.contains($1.key)) },
+                        range == .week ? 380 : 520))
                 }
                 if range == .day { Legend() }
             } else if tracker.error == nil {
