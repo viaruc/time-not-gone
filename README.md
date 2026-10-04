@@ -23,7 +23,7 @@ Thursday, 01 October 2026  —  1h 35m total
 | Claude Code CLI | `~/.claude/projects/**/*.jsonl` |
 | Claude Code in VS Code | same, told apart by the log's `entrypoint` field |
 | Claude Desktop, Code tab | same (the Desktop app runs Claude Code under the hood) |
-| Claude Desktop, Cowork | `~/Library/Application Support/Claude/local-agent-mode-sessions/*/*/local_*/audit.jsonl` |
+| Claude Desktop, Cowork (local sessions only, see below) | `~/Library/Application Support/Claude/local-agent-mode-sessions/*/*/local_*/audit.jsonl` |
 
 **Workspace** means the folder a session was started in. Two details:
 
@@ -133,8 +133,13 @@ displays the JSON that `tng menubar` prints.
 
 ## Limitations
 
-- Only activity on this Mac is counted. Cloud and remote sessions and claude.ai chats
-  aren't included.
+- Only activity on this Mac is counted. These aren't included, because their history
+  lives in your claude.ai account rather than on disk:
+  - **Chat tab conversations** in Claude Desktop (and claude.ai chats generally).
+  - **Cloud Cowork sessions.** Cowork moved to the cloud around June 2026; the Desktop
+    app only keeps a list of their IDs and shared folders, with no timestamps. Older
+    Cowork sessions that ran on this Mac are counted.
+  - Cloud Code sessions and sessions over SSH.
 - A tool call that runs longer than the idle cutoff without writing anything (a long
   build, for example) counts as idle.
 - Desktop and Cowork store their data in undocumented places, so a future Claude update
